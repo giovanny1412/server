@@ -8,7 +8,6 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Mapa de placas soportadas
 const BOARD_MAP = {
   "esp32": "esp32:esp32:esp32",
   "esp32s3": "esp32:esp32:esp32s3",
@@ -19,42 +18,53 @@ const BOARD_MAP = {
 app.post('/compile', (req, res) => {
     const { code, board } = req.body;
 
-    // Selecciona el FQBN dinámico enviado por el cliente (por defecto ESP32-C3)
-    const fqbn = BOARD_MAP[board] || "esp32:esp32:esp32c3";
+    // Validación de entrada
+    if (!code) {
+        return res.status(400).json({ success: false, error: "No se recibió código C++ para compilar." });
+    }
 
-    // Generar un nombre único coincidente para la carpeta y el archivo
+    const fqbn = BOARD_MAP[board] || "esp32:esp32:esp32c3";
     const sketchName = `build_${Date.now()}`;
     const sessionDir = path.join(__dirname, 'builds', sketchName);
 
-    // Crear el directorio
-    fs.mkdirSync(sessionDir, { recursive: true });
+    try {
+        // 1. Crear carpeta
+        fs.mkdirSync(sessionDir, { recursive: true });
 
-    // EL FIX: El archivo .ino DEBE tener exactamente el mismo nombre que la carpeta
-    const inoPath = path.join(sessionDir, `${sketchName}.ino`);
-    fs.writeFileSync(inoPath, code);
+        // 2. Ruta exacta del archivo .ino
+        const inoPath = path.join(sessionDir, `${sketchName}.ino`);
 
-    // Comando de compilación usando arduino-cli
-    const cmd = `arduino-cli compile --fqbn ${fqbn} --output-dir "${sessionDir}" "${sessionDir}"`;
+        // 3. Escribir archivo de forma sincrónica garantizada
+        fs.writeFileSync(inoPath, code, 'utf8');
 
-    exec(cmd, (error, stdout, stderr) => {
-        if (error) {
-            console.error("Error durante la compilación:", stderr || stdout);
-            return res.status(400).json({ success: false, error: stderr || stdout });
-        }
+        // 4. Ejecutar compilación pasando la ruta exacta del archivo .ino
+        const cmd = `arduino-cli compile --fqbn ${fqbn} --output-dir "${sessionDir}" "${inoPath}"`;
 
-        // El binario generado por arduino-cli tendrá este nombre
-        const binPath = path.join(sessionDir, `${sketchName}.ino.bin`);
-
-        if (fs.existsSync(binPath)) {
-            res.sendFile(binPath, () => {
-                // Limpiar archivos temporales después de enviar
+        exec(cmd, (error, stdout, stderr) => {
+            if (error) {
+                console.error("Error de compilación:", stderr || stdout);
+                // Limpiar en caso de fallo
                 fs.rmSync(sessionDir, { recursive: true, force: true });
-            });
-        } else {
-            res.status(500).json({ success: false, error: "El archivo binario no fue generado." });
-        }
-    });
+                return res.status(400).json({ success: false, error: stderr || stdout });
+            }
+
+            const binPath = path.join(sessionDir, `${sketchName}.ino.bin`);
+
+            if (fs.existsSync(binPath)) {
+                res.sendFile(binPath, () => {
+                    // Borrar temporales tras la descarga exitosa
+                    fs.rmSync(sessionDir, { recursive: true, force: true });
+                });
+            } else {
+                fs.rmSync(sessionDir, { recursive: true, force: true });
+                res.status(500).json({ success: false, error: "El binario no se generó correctamente." });
+            }
+        });
+
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Servidor de compilación activo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`Servidor escuchando en puerto ${PORT}`));
