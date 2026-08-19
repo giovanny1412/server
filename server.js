@@ -8,31 +8,40 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Mapa de placas válidas para evitar ejecución de comandos no deseados
+const BOARD_MAP = {
+  "esp32": "esp32:esp32:esp32",
+  "esp32s3": "esp32:esp32:esp32s3",
+  "esp32c3": "esp32:esp32:esp32c3",
+  "esp32c6": "esp32:esp32:esp32c6"
+};
+
 app.post('/compile', (req, res) => {
-    const { code } = req.body;
+    const { code, board } = req.body;
     
-    // Crear carpeta temporal única para la sesión
-    const sessionDir = path.join(__dirname, 'builds', `build_${Date.now()}`);
+    // Obtener el FQBN correcto según lo enviado por el usuario (por defecto ESP32 normal)
+    const fqbn = BOARD_MAP[board] || "esp32:esp32:esp32";
+
+    const sketchName = `build_${Date.now()}`;
+    const sessionDir = path.join(__dirname, 'builds', sketchName);
+    
     fs.mkdirSync(sessionDir, { recursive: true });
     
-    // Guardar el código C++ en un archivo .ino
-    const inoPath = path.join(sessionDir, 'sketch.ino');
+    const inoPath = path.join(sessionDir, `${sketchName}.ino`);
     fs.writeFileSync(inoPath, code);
 
-    // Comando de compilación con arduino-cli
-    const cmd = `arduino-cli compile --fqbn esp32:esp32:esp32 --output-dir "${sessionDir}" "${sessionDir}"`;
+    // Usa el FQBN dinámico correspondiente a la placa seleccionada
+    const cmd = `arduino-cli compile --fqbn ${fqbn} --output-dir "${sessionDir}" "${sessionDir}"`;
 
     exec(cmd, (error, stdout, stderr) => {
         if (error) {
             console.error("Error de compilación:", stderr);
-            return res.status(400).json({ success: false, error: stderr });
+            return res.status(400).json({ success: false, error: stderr || stdout });
         }
 
-        // Buscar el archivo .bin generado
-        const binPath = path.join(sessionDir, 'sketch.ino.bin');
+        const binPath = path.join(sessionDir, `${sketchName}.ino.bin`);
         if (fs.existsSync(binPath)) {
             res.sendFile(binPath, () => {
-                // Limpieza de archivos temporales
                 fs.rmSync(sessionDir, { recursive: true, force: true });
             });
         } else {
