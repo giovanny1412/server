@@ -18,32 +18,29 @@ const BOARD_MAP = {
 app.post('/compile', (req, res) => {
     const { code, board } = req.body;
 
-    // Validación de entrada
     if (!code) {
-        return res.status(400).json({ success: false, error: "No se recibió código C++ para compilar." });
+        return res.status(400).json({ success: false, error: "No se recibió código C++." });
     }
 
     const fqbn = BOARD_MAP[board] || "esp32:esp32:esp32c3";
     const sketchName = `build_${Date.now()}`;
-    const sessionDir = path.join(__dirname, 'builds', sketchName);
+    
+    // Crear la carpeta dentro de /tmp para evitar problemas de permisos en Render
+    const sessionDir = path.join('/tmp', sketchName);
 
     try {
-        // 1. Crear carpeta
         fs.mkdirSync(sessionDir, { recursive: true });
 
-        // 2. Ruta exacta del archivo .ino
+        // Archivo .ino con el MISMO NOMBRE de la carpeta
         const inoPath = path.join(sessionDir, `${sketchName}.ino`);
-
-        // 3. Escribir archivo de forma sincrónica garantizada
         fs.writeFileSync(inoPath, code, 'utf8');
 
-        // 4. Ejecutar compilación pasando la ruta exacta del archivo .ino
-        const cmd = `arduino-cli compile --fqbn ${fqbn} --output-dir "${sessionDir}" "${inoPath}"`;
+        // LA CLAVE: Nos movemos (cd) a la carpeta del proyecto antes de compilar
+        const cmd = `cd "${sessionDir}" && arduino-cli compile --fqbn ${fqbn} --output-dir "${sessionDir}" "${sketchName}.ino"`;
 
         exec(cmd, (error, stdout, stderr) => {
             if (error) {
                 console.error("Error de compilación:", stderr || stdout);
-                // Limpiar en caso de fallo
                 fs.rmSync(sessionDir, { recursive: true, force: true });
                 return res.status(400).json({ success: false, error: stderr || stdout });
             }
@@ -52,12 +49,11 @@ app.post('/compile', (req, res) => {
 
             if (fs.existsSync(binPath)) {
                 res.sendFile(binPath, () => {
-                    // Borrar temporales tras la descarga exitosa
                     fs.rmSync(sessionDir, { recursive: true, force: true });
                 });
             } else {
                 fs.rmSync(sessionDir, { recursive: true, force: true });
-                res.status(500).json({ success: false, error: "El binario no se generó correctamente." });
+                res.status(500).json({ success: false, error: "Archivo .bin no encontrado." });
             }
         });
 
@@ -67,4 +63,4 @@ app.post('/compile', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Servidor escuchando en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`Servidor activo en puerto ${PORT}`));
