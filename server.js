@@ -12,8 +12,11 @@ app.use(express.json({ limit: '2mb' }));
 const BOARD_MAP = {
   "esp32": "esp32:esp32:esp32",
   "esp32s3": "esp32:esp32:esp32s3",
+  "s3": "esp32:esp32:esp32s3",
   "esp32c3": "esp32:esp32:esp32c3",
-  "esp32c6": "esp32:esp32:esp32c6"
+  "c3": "esp32:esp32:esp32c3",
+  "esp32c6": "esp32:esp32:esp32c6",
+  "c6": "esp32:esp32:esp32c6"
 };
 
 // Todos los builds se crean SIEMPRE dentro de /tmp (único directorio con
@@ -75,7 +78,10 @@ app.post('/compile', (req, res) => {
     const inoPath = path.join(sessionDir, `${sketchName}.ino`);
     fs.writeFileSync(inoPath, code, 'utf8');
 
-    const cmd = `arduino-cli compile --fqbn ${fqbn} --output-dir "${sessionDir}" "${inoPath}"`;
+    // --jobs 1 fuerza compilación mono-hilo: evita que arduino-cli use todos los
+    // núcleos en paralelo, lo que dispara el consumo de RAM y provoca OOM kills
+    // en el plan gratuito de Render (512 MB). Es más lento pero estable.
+    const cmd = `arduino-cli compile --jobs 1 --fqbn ${fqbn} --output-dir "${sessionDir}" "${inoPath}"`;
 
     exec(
       cmd,
