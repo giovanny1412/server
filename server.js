@@ -6,7 +6,7 @@ const path = require('path');
 
 const app = express();
 
-// 1. CONFIGURACIÓN COMPLETA Y LIBRE DE CORS
+// Configuración de CORS permisivo para GitHub Pages o cualquier cliente web
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'OPTIONS'],
@@ -15,6 +15,7 @@ app.use(cors({
 
 app.use(express.json());
 
+// Mapeo completo de nombres de placas (soporta alias cortos y largos)
 const BOARD_MAP = {
   "esp32": "esp32:esp32:esp32",
   "esp32s3": "esp32:esp32:esp32s3",
@@ -25,7 +26,7 @@ const BOARD_MAP = {
   "c6": "esp32:esp32:esp32c6"
 };
 
-// Ruta de prueba para verificar que el servidor responda
+// Ruta raíz de comprobación de estado
 app.get('/', (req, res) => {
   res.send("Servidor de compilación activo y listo.");
 });
@@ -42,14 +43,17 @@ app.post('/compile', (req, res) => {
     const sessionDir = path.join('/tmp', sketchName);
 
     try {
+        // 1. Crear carpeta temporal en /tmp
         fs.mkdirSync(sessionDir, { recursive: true });
 
+        // 2. Crear archivo .ino con el mismo nombre exacto de la carpeta
         const inoPath = path.join(sessionDir, `${sketchName}.ino`);
         fs.writeFileSync(inoPath, code, 'utf8');
 
-        // Comando ultra-optimizado para Render (limitado a 1 hilo sin sobrecargar la RAM)
+        // 3. Comando con --jobs 1 para no saturar la memoria RAM en Render
         const cmd = `arduino-cli compile --fqbn ${fqbn} --jobs 1 --output-dir "${sessionDir}" "${sketchName}.ino"`;
 
+        // 4. Ejecutar usando { cwd: sessionDir } para evitar errores de directorio de trabajo
         exec(cmd, { cwd: sessionDir, maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
             if (error) {
                 console.error("Error de compilación:", stderr || stdout);
@@ -59,13 +63,14 @@ app.post('/compile', (req, res) => {
 
             const binPath = path.join(sessionDir, `${sketchName}.ino.bin`);
 
+            // 5. Enviar archivo binario y limpiar la carpeta al finalizar
             if (fs.existsSync(binPath)) {
                 res.sendFile(binPath, () => {
                     fs.rmSync(sessionDir, { recursive: true, force: true });
                 });
             } else {
                 fs.rmSync(sessionDir, { recursive: true, force: true });
-                res.status(500).json({ success: false, error: "El archivo binario no fue generado." });
+                res.status(500).json({ success: false, error: "Archivo .bin no encontrado tras compilar." });
             }
         });
 
