@@ -6,7 +6,10 @@ const path = require('path');
 
 const app = express();
 
-// Configuración de CORS permisivo para GitHub Pages o cualquier cliente web
+// Variable de estado (candado/semáforo) para evitar OOM por cargas simultáneas en Render
+let isCompiling = false;
+
+// Configuración de CORS permisivo
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'OPTIONS'],
@@ -15,7 +18,7 @@ app.use(cors({
 
 app.use(express.json());
 
-// Mapeo completo de nombres de placas (soporta alias cortos y largos)
+// Mapeo completo de nombres de placas
 const BOARD_MAP = {
   "esp32": "esp32:esp32:esp32",
   "esp32s3": "esp32:esp32:esp32s3",
@@ -32,49 +35,104 @@ app.get('/', (req, res) => {
 });
 
 app.post('/compile', (req, res) => {
+    // 1. Control de concurrencia para evitar saturación de RAM (512MB)
+    if (isCompiling) {
+        return res.status(503).json({ 
+            success: false, 
+            error: "El servidor ya está procesando una compilación. Por favor espera unos segundos e intentalo de nuevo." 
+        });
+    }
+
     const { code, board } = req.body;
 
     if (!code) {
         return res.status(400).json({ success: false, error: "No se recibió código C++." });
     }
 
+    isCompiling = true; // Activar candado
+
     const fqbn = BOARD_MAP[board] || "esp32:esp32:esp32c3";
     const sketchName = `build_${Date.now()}`;
     const sessionDir = path.join('/tmp', sketchName);
 
     try {
-        // 1. Crear carpeta temporal en /tmp
+        // 2. Crear carpeta temporal en /tmp
         fs.mkdirSync(sessionDir, { recursive: true });
 
-        // 2. Crear archivo .ino con el mismo nombre exacto de la carpeta
+        // 3. Crear archivo .ino
         const inoPath = path.join(sessionDir, `${sketchName}.ino`);
         fs.writeFileSync(inoPath, code, 'utf8');
 
-        // 3. Comando con --jobs 1 para no saturar la memoria RAM en Render
+        // 4. Comando de compilación optimizado
         const cmd = `arduino-cli compile --fqbn ${fqbn} --jobs 1 --output-dir "${sessionDir}" "${sketchName}.ino"`;
 
-        // 4. Ejecutar usando { cwd: sessionDir } para evitar errores de directorio de trabajo
+        // 5. Ejecución del compilador
         exec(cmd, { cwd: sessionDir, maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
+            isCompiling = false; // Liberar candado al finalizar proceso
+
             if (error) {
                 console.error("Error de compilación:", stderr || stdout);
                 fs.rmSync(sessionDir, { recursive: true, force: true });
                 return res.status(400).json({ success: false, error: stderr || stdout });
             }
 
-            const binPath = path.join(sessionDir, `${sketchName}.ino.bin`);
+            const appPath = path.join(sessionDir, `${sketchName}.ino.bin`);
+            const bootloaderPath = path.join(sessionDir, `${sketchName}.ino.bootloader.bin`);
+            const partitionsPath = path.join(sessionDir, `${sketchName}.ino.partitions.bin`);
+            const bootApp0Path = path.join(sessionDir, `boot_app0.bin`);
 
-            // 5. Enviar archivo binario y limpiar la carpeta al finalizar
-            if (fs.existsSync(binPath)) {
-                res.sendFile(binPath, () => {
-                    fs.rmSync(sessionDir, { recursive: true, force: true });
-                });
-            } else {
+            if (!fs.existsSync(appPath)) {
                 fs.rmSync(sessionDir, { recursive: true, force: true });
-                res.status(500).json({ success: false, error: "Archivo .bin no encontrado tras compilar." });
+                return res.status(500).json({ success: false, error: "Archivo .bin principal no encontrado tras compilar." });
+            }
+
+            try {
+                // 6. Leer binarios y empaquetar en Base64 para retornarlos juntos
+                const files = [];
+
+                files.push({
+                    type: 'app',
+                    data: fs.readFileSync(appPath).toString('base64')
+                });
+
+                if (fs.existsSync(bootloaderPath)) {
+                    files.push({
+                        type: 'bootloader',
+                        data: fs.readFileSync(bootloaderPath).toString('base64')
+                    });
+                }
+
+                if (fs.existsSync(partitionsPath)) {
+                    files.push({
+                        type: 'partitions',
+                        data: fs.readFileSync(partitionsPath).toString('base64')
+                    });
+                }
+
+                if (fs.existsSync(bootApp0Path)) {
+                    files.push({
+                        type: 'boot_app0',
+                        data: fs.readFileSync(bootApp0Path).toString('base64')
+                    });
+                }
+
+                // Limpiar archivos temporales de disco
+                fs.rmSync(sessionDir, { recursive: true, force: true });
+
+                // Retornar JSON completo
+                return res.json({
+                    success: true,
+                    files: files
+                });
+
+            } catch (fsError) {
+                fs.rmSync(sessionDir, { recursive: true, force: true });
+                return res.status(500).json({ success: false, error: "Error procesando los archivos binarios: " + fsError.message });
             }
         });
 
     } catch (err) {
+        isCompiling = false; // Liberar candado si falla antes del exec
         console.error("Error general:", err);
         res.status(500).json({ success: false, error: err.message });
     }
