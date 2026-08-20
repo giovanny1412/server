@@ -61,17 +61,51 @@ app.post('/compile', (req, res) => {
                 return res.status(400).json({ success: false, error: stderr || stdout });
             }
 
-            const binPath = path.join(sessionDir, `${sketchName}.ino.bin`);
+            const appPath        = path.join(sessionDir, `${sketchName}.ino.bin`);
+            const bootloaderPath = path.join(sessionDir, `${sketchName}.ino.bootloader.bin`);
+            const partitionsPath = path.join(sessionDir, `${sketchName}.ino.partitions.bin`);
+            const bootApp0Path   = path.join(sessionDir, `boot_app0.bin`);
 
-            // 5. Enviar archivo binario y limpiar la carpeta al finalizar
-            if (fs.existsSync(binPath)) {
-                res.sendFile(binPath, () => {
-                    fs.rmSync(sessionDir, { recursive: true, force: true });
-                });
-            } else {
+            if (!fs.existsSync(appPath)) {
                 fs.rmSync(sessionDir, { recursive: true, force: true });
-                res.status(500).json({ success: false, error: "Archivo .bin no encontrado tras compilar." });
+                return res.status(500).json({ success: false, error: "Archivo .bin no encontrado tras compilar." });
             }
+
+            // ESP32 clásico usa bootloader en 0x1000; S3/C3/C6 lo usan en 0x0
+            const bootloaderAddress = (fqbn.includes("s3") || fqbn.includes("c3") || fqbn.includes("c6")) ? 0x0 : 0x1000;
+
+            const files = [];
+
+            if (fs.existsSync(bootloaderPath)) {
+                files.push({
+                    name: "bootloader",
+                    address: bootloaderAddress,
+                    data: fs.readFileSync(bootloaderPath).toString('base64')
+                });
+            }
+            if (fs.existsSync(partitionsPath)) {
+                files.push({
+                    name: "partitions",
+                    address: 0x8000,
+                    data: fs.readFileSync(partitionsPath).toString('base64')
+                });
+            }
+            if (fs.existsSync(bootApp0Path)) {
+                files.push({
+                    name: "boot_app0",
+                    address: 0xe000,
+                    data: fs.readFileSync(bootApp0Path).toString('base64')
+                });
+            }
+            // La app siempre va al final (0x10000 en todas las variantes ESP32)
+            files.push({
+                name: "app",
+                address: 0x10000,
+                data: fs.readFileSync(appPath).toString('base64')
+            });
+
+            fs.rmSync(sessionDir, { recursive: true, force: true });
+            res.json({ success: true, files });
         });
 
     } catch (err) {
