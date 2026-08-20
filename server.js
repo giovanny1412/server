@@ -31,7 +31,14 @@ app.get('/', (req, res) => {
   res.send("Servidor de compilación activo y listo.");
 });
 
+// Candado simple: evita que dos compilaciones corran en paralelo y agoten la RAM (512MB en Render free)
+let compilando = false;
+
 app.post('/compile', (req, res) => {
+    if (compilando) {
+        return res.status(503).json({ success: false, error: "El servidor ya está compilando otro sketch. Espera unos segundos e intenta de nuevo." });
+    }
+
     const { code, board } = req.body;
 
     if (!code) {
@@ -41,6 +48,9 @@ app.post('/compile', (req, res) => {
     const fqbn = BOARD_MAP[board] || "esp32:esp32:esp32c3";
     const sketchName = `build_${Date.now()}`;
     const sessionDir = path.join('/tmp', sketchName);
+
+    compilando = true;
+    const liberarCandado = () => { compilando = false; };
 
     try {
         // 1. Crear carpeta temporal en /tmp
@@ -58,6 +68,7 @@ app.post('/compile', (req, res) => {
             if (error) {
                 console.error("Error de compilación:", stderr || stdout);
                 fs.rmSync(sessionDir, { recursive: true, force: true });
+                liberarCandado();
                 return res.status(400).json({ success: false, error: stderr || stdout });
             }
 
@@ -68,6 +79,7 @@ app.post('/compile', (req, res) => {
 
             if (!fs.existsSync(appPath)) {
                 fs.rmSync(sessionDir, { recursive: true, force: true });
+                liberarCandado();
                 return res.status(500).json({ success: false, error: "Archivo .bin no encontrado tras compilar." });
             }
 
@@ -105,11 +117,13 @@ app.post('/compile', (req, res) => {
             });
 
             fs.rmSync(sessionDir, { recursive: true, force: true });
+            liberarCandado();
             res.json({ success: true, files });
         });
 
     } catch (err) {
         console.error("Error general:", err);
+        liberarCandado();
         res.status(500).json({ success: false, error: err.message });
     }
 });
